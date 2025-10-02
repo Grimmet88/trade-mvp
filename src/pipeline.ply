@@ -11,7 +11,6 @@ from src.features.aggregate_sentiment import aggregate_daily_sentiment as agg_ne
 from src.scrapers.fetch_reddit import fetch_reddit_posts
 from src.features.aggregate_reddit import tag_tickers, aggregate_daily_reddit as agg_reddit
 from src.portfolio.positions import load_positions, save_positions, open_position, close_position
-from src.data.short_interest import get_short_interest_pct
 
 # ---------------- Settings ----------------
 UNIVERSE_CSV       = "src/universe/tickers.csv"
@@ -33,25 +32,31 @@ STOP_LOSS       = 0.08            # -8%
 TAKE_PROFIT     = 0.05            # +5%
 SENT_EXIT_MIN   = 0.20            # blended sentiment below this → SELL
 
-# Weights for final ranking
-W_MOM     = 0.30   # momentum (z)
-W_RS      = 0.30   # relative strength vs sector (z)
-W_NEWS    = 0.25   # news sentiment (raw 0..1)
-W_REDDIT  = 0.15   # reddit sentiment (raw 0..1)
-W_SQUEEZE = 0.10   # short-interest × momentum boost
+# Weights for final ranking (tweak freely)
+W_MOM    = 0.30   # 30% raw momentum (z-scored)
+W_RS     = 0.30   # 30% relative strength vs sector (z-scored)
+W_NEWS   = 0.25   # 25% news sentiment (raw 0..1)
+W_REDDIT = 0.15   # 15% reddit sentiment (raw 0..1)
 # ------------------------------------------
 
-# Minimal sector map; extend as needed (fallback SPY)
+# Minimal sector map; extend as you like. Fallback = SPY when not found.
 SECTOR_MAP = {
-    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "AVGO": "XLK",
-    "META": "XLC", "GOOGL": "XLC", "GOOG": "XLC", "NFLX": "XLC",
-    "ADBE": "XLK", "CRM": "XLK", "CSCO": "XLK", "ORCL": "XLK", "TXN": "XLK", "QCOM": "XLK",
-    "JPM": "XLF", "V": "XLF", "MA": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "PYPL": "XLF",
-    "LLY": "XLV", "MRK": "XLV", "TMO": "XLV", "UNH": "XLV", "PFE": "XLV",
-    "AMZN": "XLY", "TSLA": "XLY", "COST": "XLY", "MCD": "XLY", "NKE": "XLY", "WMT": "XLY", "HD": "XLY",
-    "PEP": "XLP", "KO": "XLP",
-    "CAT": "XLI", "GE": "XLI",
-    "XOM": "XLE", "CVX": "XLE",
+    # Tech
+    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "AVGO":"XLK",
+    "META": "XLC", "GOOGL":"XLC", "GOOG":"XLC", "NFLX":"XLC", "ADBE":"XLK",
+    "CRM":"XLK", "CSCO":"XLK", "ORCL":"XLK", "TXN":"XLK", "QCOM":"XLK",
+    # Financials
+    "JPM":"XLF", "V":"XLF", "MA":"XLF", "BAC":"XLF", "GS":"XLF", "MS":"XLF", "PYPL":"XLF",
+    # Health Care
+    "LLY":"XLV", "MRK":"XLV", "TMO":"XLV", "UNH":"XLV", "PFE":"XLV",
+    # Consumer
+    "AMZN":"XLY", "TSLA":"XLY", "COST":"XLY", "MCD":"XLY", "NKE":"XLY", "WMT":"XLY", "HD":"XLY",
+    "PEP":"XLP", "KO":"XLP",
+    # Industrials
+    "CAT":"XLI", "GE":"XLI",
+    # Energy
+    "XOM":"XLE", "CVX":"XLE",
+    # Materials / Utilities / Real Estate etc. — add as needed
 }
 
 os.makedirs("data", exist_ok=True)
@@ -62,12 +67,11 @@ def zscore(s: pd.Series) -> pd.Series:
     return (s - mu) / sd if (sd and sd > 0) else s * 0
 
 def main():
-    # 1) Universe
+    # 1) Universe + prices/volume
     tickers = load_universe(UNIVERSE_CSV)
     if not tickers:
         raise SystemExit("Universe is empty. Add tickers to src/universe/tickers.csv")
 
-    # 2) Price data
     close, volume = get_prices(tickers, lookback_days=LOOKBACK_DAYS)
     today = close.index.max()
     if pd.isna(today):
@@ -79,18 +83,17 @@ def main():
     last_close = close.loc[today].dropna()
     last_avg_vol20 = avg_vol20.loc[today].reindex(last_close.index)
 
-    # Screen tickers
+    # 2) Liquidity/price screen
     screened = last_close[(last_close > MIN_PRICE) & (last_avg_vol20 > MIN_AVG_VOL_20D)].index.tolist()
     if len(screened) < 10:
-        screened = last_close.index.tolist()
+        screened = last_close.index.tolist()  # be forgiving
 
-    # Momentum
+    # 3) Momentum ranks
     r5_today = ret5.loc[today].reindex(screened).dropna()
     ranked_by_r5 = r5_today.sort_values(ascending=False)
-    r5_z_all = zscore(ranked_by_r5)  # keep for squeeze
 
-    # 3) News sentiment (48h window for top-K momentum names)
-    candidates = r5_today.sort_values(ascending=False).head(TOP_K_FOR_NEWS).index.tolist()
+    # 4) NEWS sentiment for top-K momentum names (48h window)
+    candidates = ranked_by_r5.head(TOP_K_FOR_NEWS).index.tolist()
     end = dt.datetime.utcnow()
     start = end - dt.timedelta(hours=48)
 
@@ -118,12 +121,14 @@ def main():
     else:
         news_today = pd.DataFrame(columns=["sent_pos","sent_neg","sent_mean","n_news"]).set_index(pd.Index([]))
 
-    # 4) Reddit sentiment
-    term_map = {t: [t, f"{t} stock"] for t in screened}
+    # 5) REDDIT posts → tag to tickers → FinBERT (safe truncation) → daily agg
+    term_map = {t: [t, f"{t} stock"] for t in screened}  # extend with company names later
     reddit_posts = fetch_reddit_posts(SUBREDDITS, lookback_hours=REDDIT_LOOKBACK_HRS, limit_per_sub=REDDIT_LIMIT_PERSUB)
     reddit_df = pd.DataFrame(reddit_posts)
 
-    def _clip(s, n): return (s or "")[:n]
+    def _clip(s, n):
+        s = s or ""
+        return s[:n]
 
     if not reddit_df.empty:
         tagged = tag_tickers(reddit_df, term_map)
@@ -140,7 +145,8 @@ def main():
     else:
         reddit_today = pd.DataFrame(columns=["sent_reddit_mean","reddit_pos","reddit_neg","n_reddit"]).set_index(pd.Index([]))
 
-    # 5) Relative Strength vs sector ETF (5d)
+    # 6) NEW: Relative Strength vs Sector (5d)
+    # Fetch benchmark SPY and sector ETFs present in SECTOR_MAP
     sector_etfs = sorted(set(SECTOR_MAP.get(t, "SPY") for t in screened) | {"SPY"})
     sec_close, _ = get_prices(sector_etfs, lookback_days=LOOKBACK_DAYS)
     ret5_sec = sec_close.pct_change(5)
@@ -152,40 +158,37 @@ def main():
         if etf in ret5_sec.columns and today in ret5_sec.index:
             sec_r5 = float(ret5_sec.loc[today, etf])
         else:
+            # Fallback to SPY if ETF not available today
             sec_r5 = float(ret5_sec.loc[today, "SPY"]) if "SPY" in ret5_sec.columns else 0.0
-        rs5[t] = stock_r5 - sec_r5
+        rs5[t] = stock_r5 - sec_r5  # positive = outperform sector
     rs5_series = pd.Series(rs5).dropna()
     rs5_z = zscore(rs5_series).reindex(r5_today.index).fillna(0.0)
 
-    # 6) Short interest & Squeeze score
-    si_pct = get_short_interest_pct(screened)                             # 0..1
-    si_z = zscore(si_pct).reindex(r5_today.index).fillna(0.0)
-    squeeze_score = si_z.clip(lower=0) * r5_z_all.reindex(r5_today.index).fillna(0.0).clip(lower=0)
+    # 7) Build combined score (momentum z + RS z + sentiments)
+    r5_z = zscore(ranked_by_r5)
 
-    # 7) Combine scores
-    s_news = pd.Series(0.0, index=r5_today.index)
-    n_news = pd.Series(0, index=r5_today.index, dtype=int)
+    s_news = pd.Series(0.0, index=r5_z.index)
+    n_news = pd.Series(0, index=r5_z.index, dtype=int)
     if not news_today.empty:
         s_news.update(news_today.get("sent_mean", pd.Series(dtype=float)))
         n_news.update(news_today.get("n_news", pd.Series(dtype=int)))
 
-    s_redd = pd.Series(0.0, index=r5_today.index)
-    n_redd = pd.Series(0, index=r5_today.index, dtype=int)
+    s_redd = pd.Series(0.0, index=r5_z.index)
+    n_redd = pd.Series(0, index=r5_z.index, dtype=int)
     if not reddit_today.empty:
         s_redd.update(reddit_today.get("sent_reddit_mean", pd.Series(dtype=float)))
         n_redd.update(reddit_today.get("n_reddit", pd.Series(dtype=int)))
 
     combined = (
-        W_MOM     * r5_z_all.reindex(r5_today.index).fillna(0.0) +
-        W_RS      * rs5_z.reindex(r5_today.index).fillna(0.0) +
-        W_NEWS    * s_news.reindex(r5_today.index).fillna(0.0) +
-        W_REDDIT  * s_redd.reindex(r5_today.index).fillna(0.0) +
-        W_SQUEEZE * squeeze_score.fillna(0.0)
+        W_MOM    * r5_z.reindex(r5_today.index).fillna(0.0) +
+        W_RS     * rs5_z.reindex(r5_today.index).fillna(0.0) +
+        W_NEWS   * s_news.reindex(r5_today.index).fillna(0.0) +
+        W_REDDIT * s_redd.reindex(r5_today.index).fillna(0.0)
     )
 
     buy_set = set(combined.sort_values(ascending=False).head(TOP_N_BUYS).index.tolist())
 
-    # 8) BUY/HOLD rows
+    # 8) Base BUY/HOLD rows for screened names
     rows_base = []
     for t in screened:
         lc = float(last_close.get(t, 0.0))
@@ -195,34 +198,26 @@ def main():
         nn = int(n_news.get(t, 0))
         nr = int(n_redd.get(t, 0))
         rs = float(rs5.get(t, 0.0))
-        si = float(si_pct.get(t, 0.0))
-        sq = float(squeeze_score.get(t, 0.0))
-
         action = "BUY" if t in buy_set else "HOLD"
+        # confidence: positive momentum + blended sentiment; RS indirectly captured via action
         conf = max(0.0, min(0.99, (max(0, r5) * 10) * 0.35 + (0.65 * (0.6 * sn + 0.4 * sr))))
-
         reasons = (
             f"r5={r5:.3f}, RS5={rs:.3f}, news={sn:.2f} (n={nn}), "
-            f"reddit={sr:.2f} (n={nr}), short%={si:.3f}, sq={sq:.3f}, "
-            f"score={float(combined.get(t,0)):.3f}"
+            f"reddit={sr:.2f} (n={nr}), score={float(combined.get(t,0)):.3f}"
         )
-
         feats = {
             "ret_5d": round(r5, 4),
             "rel_strength_5d": round(rs, 4),
-            "short_pct_float": round(si, 3),
-            "squeeze_score": round(sq, 3),
             "sent_news": round(sn, 2), "n_news": nn,
             "sent_reddit": round(sr, 2), "n_reddit": nr,
             "score": round(float(combined.get(t, 0)), 3)
         }
-
         rows_base.append([
             dt.date.today().isoformat(), t, action, 0, lc, 0, 0,
             round(conf, 2), reasons, str(feats)
         ])
 
-    # 9) SELL rules
+    # 9) SELL logic for open positions
     positions = load_positions()
     sell_rows = []
     if not positions.empty:
@@ -237,47 +232,40 @@ def main():
             r5 = float(r5_today.get(t, 0.0)) if t in r5_today.index else 0.0
             sn = float(s_news.get(t, 0.0))
             sr = float(s_redd.get(t, 0.0))
-            si = float(si_pct.get(t, 0.0)) if t in si_pct.index else 0.0
-            sq = float(squeeze_score.get(t, 0.0)) if t in squeeze_score.index else 0.0
 
             triggers, do_sell = [], False
-            if pnl <= -STOP_LOSS:             do_sell=True; triggers.append(f"stop {-STOP_LOSS*100:.0f}%")
-            if pnl >=  TAKE_PROFIT:           do_sell=True; triggers.append(f"take +{TAKE_PROFIT*100:.0f}%")
-            if r5 <= 0:                       do_sell=True; triggers.append("momentum<=0")
+            if pnl <= -STOP_LOSS:            do_sell=True; triggers.append(f"stop {-STOP_LOSS*100:.0f}%")
+            if pnl >=  TAKE_PROFIT:          do_sell=True; triggers.append(f"take +{TAKE_PROFIT*100:.0f}%")
+            if r5 <= 0:                      do_sell=True; triggers.append("momentum<=0")
             if (0.6 * sn + 0.4 * sr) < SENT_EXIT_MIN:
-                                             do_sell=True; triggers.append(f"sent<{SENT_EXIT_MIN:.2f}")
-            if days_held >= HOLD_DAYS_MAX:    do_sell=True; triggers.append(f"time>{HOLD_DAYS_MAX}d")
+                                            do_sell=True; triggers.append(f"sent<{SENT_EXIT_MIN:.2f}")
+            if days_held >= HOLD_DAYS_MAX:   do_sell=True; triggers.append(f"time>{HOLD_DAYS_MAX}d")
 
             if do_sell:
                 sell_rows.append([
                     dt.date.today().isoformat(), t, "SELL", int(pos.get("qty", 1)), price, 0, 0, 0.80,
                     "; ".join(triggers),
-                    str({
-                        "pnl": round(float(pnl), 4),
-                        "r5": round(r5, 4),
-                        "news": round(sn, 2),
-                        "reddit": round(sr, 2),
-                        "short_pct_float": round(si, 3),
-                        "squeeze_score": round(sq, 3)
-                    })
+                    str({"pnl": round(float(pnl),4), "r5": round(r5,4), "news": round(sn,2), "reddit": round(sr,2)})
                 ])
                 positions = close_position(positions, t)
 
-    # 10) Prevent duplicate buys
+    # 10) Prevent duplicate BUYs for already-open tickers
     open_set = set(positions["ticker"].tolist()) if not positions.empty else set()
     for row in rows_base:
         if row[1] in open_set and row[2] == "BUY":
             row[2] = "HOLD"
 
-    # 11) Write signals
+    # 11) Write signals (SELL first, then BUY/HOLD)
     header = ["date","ticker","action","qty","entry_price","stop","take_profit","confidence","reasons","features_json"]
     with open("data/signals_latest.csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(header)
-        for sr in sell_rows: w.writerow(sr)
-        for br in rows_base: w.writerow(br)
+        for sr in sell_rows:
+            w.writerow(sr)
+        for br in rows_base:
+            w.writerow(br)
 
-    # 12) Update positions
+    # 12) Update positions with fresh BUYs (qty=1 paper)
     updated = positions.copy()
     for row in rows_base:
         d, t, action, _, entry_price, *_ = row
@@ -287,7 +275,7 @@ def main():
 
     print("✅ signals_updated.",
           f"Sells: {', '.join([r[1] for r in sell_rows]) or 'None'} |",
-          f"Buys: {', '.join(sorted(list(combined.sort_values(ascending=False).head(TOP_N_BUYS).index)))}")
+          f"Buys: {', '.join(sorted(list(buy_set)))}")
 
 if __name__ == "__main__":
     main()

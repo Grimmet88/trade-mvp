@@ -1,8 +1,12 @@
 pandas
 numpy
+requests
 python-dotenv
 yfinance
-requests
 transformers
 torch
-python-dotenv
+praw
+yahooquery
+beautifulsoup4
+lxml
+

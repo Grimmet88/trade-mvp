@@ -205,3 +205,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Environment files
+.env
+*.env
+
+# Python stuff
+__pycache__/
+*.pyc
+.venv/
+
+# Data & reports
+data/
+reports/
+
