@@ -1,2 +1,4 @@
 date,ticker,action,qty,entry_price,stop,take_profit,confidence,reasons,features_json
-2025-10-01,AAPL,HOLD,0,0,0,0,0.5,Bootstrap test,{}
+2025-10-01,AAPL,BUY,0,254.6300048828125,0,0,0.01,5d momentum > 0,{'ret_5d': 0.0008}
+2025-10-01,MSFT,BUY,0,517.9500122070312,0,0,0.17,5d momentum > 0,{'ret_5d': 0.0171}
+2025-10-01,NVDA,BUY,0,186.5800018310547,0,0,0.46,5d momentum > 0,{'ret_5d': 0.0457}
