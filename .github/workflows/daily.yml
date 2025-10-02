@@ -1,0 +1,29 @@
+name: daily-signals
+on:
+  schedule:
+    - cron: "0 22 * * 1-5"   # 22:00 UTC Mon–Fri
+  workflow_dispatch: {}      # allow manual run from GitHub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: Run pipeline
+        run: |
+          python -m src.pipeline || python src/pipeline.py
+      - name: Make Markdown report
+        run: |
+          python src/report/make_markdown.py
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily_signals
+          path: reports/daily_signals.md
