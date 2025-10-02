@@ -1,7 +1,9 @@
 name: deploy-pages
+
 on:
   schedule:
-    - cron: "0 22 * * 1-5"   # 22:00 UTC on weekdays
+    # Runs Mon–Fri at 22:15 UTC (early evening US/Eastern). Adjust as you like.
+    - cron: "15 22 * * 1-5"
   workflow_dispatch: {}
 
 permissions:
@@ -17,26 +19,75 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps
+
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-      - name: Run pipeline
+
+name: deploy-pages
+
+on:
+  schedule:
+    # Runs Mon–Fri at 22:15 UTC (early evening US/Eastern). Adjust as you like.
+    - cron: "15 22 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      # Optional: pass your NewsAPI key to the job so news sentiment works on CI
+      # Add NEWSAPI_KEY in your repo Settings → Secrets and variables → Actions → New repository secret
+      - name: Write .env (if NEWSAPI_KEY is set)
+        if: ${{ secrets.NEWSAPI_KEY != '' }}
+        run: |
+          echo "NEWSAPI_KEY=${{ secrets.NEWSAPI_KEY }}" > .env
+
+      - name: Run pipeline (SELL/BUY + positions)
         run: |
           python -m src.pipeline || python src/pipeline.py
-      - name: Build static site
+
+      - name: Build static HTML report (index + archive)
         run: |
           python src/report/make_html.py
-          mkdir -p ./_site
-          cp reports/index.html ./_site/index.html
-      - name: Upload artifact
+          mkdir -p _site
+          cp -r reports/* _site/
+
+      - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./_site
+          path: _site
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
@@ -46,3 +97,4 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
