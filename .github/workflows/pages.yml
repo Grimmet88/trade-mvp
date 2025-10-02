@@ -2,7 +2,7 @@ name: deploy-pages
 
 on:
   schedule:
-    # Runs Mon–Fri at 22:15 UTC (early evening US/Eastern). Adjust as you like.
+    # Mon–Fri at 22:15 UTC (adjust as you like)
     - cron: "15 22 * * 1-5"
   workflow_dispatch: {}
 
@@ -32,12 +32,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # Optional: pass your NewsAPI key to the job so news sentiment works on CI
-      # Add NEWSAPI_KEY in your repo Settings → Secrets and variables → Actions → New repository secret
-      - name: Write .env (if NEWSAPI_KEY is set)
-        if: ${{ secrets.NEWSAPI_KEY != '' }}
+      # ✅ Write .env only if the secret exists (no YAML if:, use shell + env)
+      - name: Write .env from secret (optional)
         run: |
-          echo "NEWSAPI_KEY=${{ secrets.NEWSAPI_KEY }}" > .env
+          if [ -n "${NEWSAPI_KEY}" ]; then
+            echo "NEWSAPI_KEY=${NEWSAPI_KEY}" > .env
+            echo "Wrote .env with NEWSAPI_KEY"
+          else
+            echo "No NEWSAPI_KEY secret set; continuing without news sentiment."
+          fi
+        env:
+          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
 
       - name: Run pipeline (SELL/BUY + positions)
         run: |
