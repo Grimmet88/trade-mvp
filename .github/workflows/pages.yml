@@ -44,12 +44,15 @@ jobs:
         env:
           NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
 
-      - name: Run pipeline (SELL/BUY + positions)
+      - name: Run pipeline (SELL/BUY + positions + PnL Report)
         run: |
-          python -m src.pipeline || python src/pipeline.py
+          # The run.py script executes both pipeline.py and reporting/report_pnl.py sequentially.
+          python run.py
 
       - name: Build static HTML report (index + archive)
         run: |
+          # This step assumes src/report/make_html.py converts the generated MD reports 
+          # (daily_signals.md and performance_summary.md) into HTML files in the 'reports' directory.
           python src/report/make_html.py
           mkdir -p _site
           cp -r reports/* _site/
@@ -68,5 +71,3 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
-
-
