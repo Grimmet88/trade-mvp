@@ -6,46 +6,14 @@ import re
 from collections import defaultdict
 
 TICKER_COMPANY_MAP = {
-    "AAPL": "Apple",
-    "MSFT": "Microsoft",
-    "NVDA": "Nvidia",
-    "AMZN": "Amazon",
-    "META": "Meta",
-    "GOOGL": "Google",
-    "GOOG": "Google",
-    "TSLA": "Tesla",
-    "AVGO": "Broadcom",
-    "LLY": "Eli Lilly",
-    "JPM": "JPMorgan Chase",
-    "V": "Visa",
-    "MA": "Mastercard",
-    "COST": "Costco",
-    "NFLX": "Netflix",
-    "ADBE": "Adobe",
-    "CRM": "Salesforce",
-    "PEP": "PepsiCo",
-    "KO": "Coca-Cola",
-    "AMD": "AMD",
-    "NKE": "Nike",
-    "MCD": "McDonald's",
-    "CSCO": "Cisco",
-    "ORCL": "Oracle",
-    "TXN": "Texas Instruments",
-    "TMO": "Thermo Fisher",
-    "MRK": "Merck",
-    "UNH": "UnitedHealth",
-    "WMT": "Walmart",
-    "HD": "Home Depot",
-    "LIN": "Linde",
-    "ABNB": "Airbnb",
-    "INTU": "Intuit",
-    "IBM": "IBM",
-    "PYPL": "PayPal",
-    "QCOM": "Qualcomm",
-    "PFE": "Pfizer",
-    "SBUX": "Starbucks",
-    "CAT": "Caterpillar",
-    "GE": "General Electric"
+    "AAPL": "Apple", "MSFT": "Microsoft", "NVDA": "Nvidia", "AMZN": "Amazon", "META": "Meta",
+    "GOOGL": "Google", "GOOG": "Google", "TSLA": "Tesla", "AVGO": "Broadcom", "LLY": "Eli Lilly",
+    "JPM": "JPMorgan Chase", "V": "Visa", "MA": "Mastercard", "COST": "Costco", "NFLX": "Netflix",
+    "ADBE": "Adobe", "CRM": "Salesforce", "PEP": "PepsiCo", "KO": "Coca-Cola", "AMD": "AMD",
+    "NKE": "Nike", "MCD": "McDonald's", "CSCO": "Cisco", "ORCL": "Oracle", "TXN": "Texas Instruments",
+    "TMO": "Thermo Fisher", "MRK": "Merck", "UNH": "UnitedHealth", "WMT": "Walmart", "HD": "Home Depot",
+    "LIN": "Linde", "ABNB": "Airbnb", "INTU": "Intuit", "IBM": "IBM", "PYPL": "PayPal",
+    "QCOM": "Qualcomm", "PFE": "Pfizer", "SBUX": "Starbucks", "CAT": "Caterpillar", "GE": "General Electric"
 }
 
 def load_universe(csv_path):
@@ -98,7 +66,7 @@ def get_action(momentum, sentiment, momentum_thresh=0.5, sentiment_thresh=0.1):
     else:
         return "Hold"
 
-def main(return_for_streamlit=True):
+def main():
     tickers = load_universe("src/data/tickers.csv")
     prices = get_prices(tickers)
     momentum = prices.iloc[-1] - prices.mean()
@@ -116,20 +84,27 @@ def main(return_for_streamlit=True):
         "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
         "https://www.nasdaq.com/feed/rssoutbound?category=Stock-Market-News"
     ]
-    articles = fetch_multiple_feeds(rss_urls)
-    print(f"Fetched {len(articles)} articles!")
+    articles = []
+    try:
+        articles = fetch_multiple_feeds(rss_urls)
+    except Exception as e:
+        print(f"Error fetching articles: {e}")
+        articles = []
 
     news_results = []
-    for a in articles:
-        sentiment = analyze_sentiment(str(a.get("title", "")) + " " + str(a.get("summary", "")))
-        mentioned = mentions_ticker(a, tickers, TICKER_COMPANY_MAP)
-        if mentioned:
-            news_results.append({
-                "title": a["title"],
-                "link": a["link"],
-                "sentiment": sentiment,
-                "tickers": mentioned
-            })
+    if articles:
+        for a in articles:
+            sentiment = analyze_sentiment(str(a.get("title", "")) + " " + str(a.get("summary", "")))
+            mentioned = mentions_ticker(a, tickers, TICKER_COMPANY_MAP)
+            if mentioned:
+                news_results.append({
+                    "title": a["title"],
+                    "link": a["link"],
+                    "sentiment": sentiment,
+                    "tickers": mentioned
+                })
+    else:
+        news_results = []
 
     avg_sentiment = aggregate_sentiment(news_results, tickers)
     decisions = {}
@@ -143,22 +118,10 @@ def main(return_for_streamlit=True):
             "action": action
         }
 
-    print(f"Found {len(news_results)} relevant articles with ticker mentions!")
-    for nr in news_results[:5]:
-        print(f"{nr['title']} | {nr['tickers']} | Sentiment: {nr['sentiment']:.2f} | {nr['link']}")
-
-    print("\nBuy/Sell/Hold Signals:")
-    for ticker, info in decisions.items():
-        print(f"{ticker}: {info['action']} (Momentum: {info['momentum']:.2f}, Sentiment: {info['sentiment']:.2f})")
-
-    print("\nTop Candidates:")
-    print(ranked.head(5))
-
-    # Always return three values for Streamlit/dashboard
+    # Always return three values, never less
     return ranked, news_results, decisions
 
 if __name__ == "__main__":
-    # Unpack all three return values for direct script usage
     ranked, news_results, decisions = main()
     print("Ranked:", ranked.head())
     print("Sample News Results:", news_results[:2])
