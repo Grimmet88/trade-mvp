@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from src.news.rss import fetch_multiple_feeds
 from textblob import TextBlob
+import re
 
 TICKER_COMPANY_MAP = {
     "AAPL": "Apple",
@@ -67,13 +68,18 @@ def analyze_sentiment(text):
 
 def mentions_ticker(article, tickers, ticker_company_map):
     text = (article.get("title", "") or "") + " " + (article.get("summary", "") or "")
+    text_lower = text.lower()
     mentions = []
     for ticker in tickers:
-        company = ticker_company_map.get(ticker, "")
-        # Check for exact ticker symbol (case sensitive) or company name (case insensitive)
-        if ticker in text or company.lower() in text.lower():
+        company = ticker_company_map.get(ticker, "").lower()
+        # Case-insensitive ticker match (full word) or company substring match
+        ticker_pattern = re.compile(rf"\b{ticker.lower()}\b")
+        if ticker_pattern.search(text_lower) or company in text_lower:
             mentions.append(ticker)
-    return mentions
+        # Also match if any word from the company name is present (partial match)
+        elif company and any(word in text_lower for word in company.split()):
+            mentions.append(ticker)
+    return list(set(mentions))  # Remove duplicates if any
 
 def main():
     tickers = load_universe("src/data/tickers.csv")
