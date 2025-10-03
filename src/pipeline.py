@@ -91,6 +91,13 @@ def main():
         "https://finance.yahoo.com/news/rssindex",
         "https://feeds.reuters.com/reuters/businessNews",
         "https://www.marketwatch.com/rss/topstories"
+        "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+        "https://www.bloomberg.com/feed/podcast/etf-report.xml",
+        "https://seekingalpha.com/market_currents.xml",
+        "https://www.investing.com/rss/news_25.rss",
+        "https://www.ft.com/?format=rss",
+        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+        "https://www.nasdaq.com/feed/rssoutbound?category=Stock-Market-News"
     ]
     articles = fetch_multiple_feeds(rss_urls)
     print(f"Fetched {len(articles)} articles!")
