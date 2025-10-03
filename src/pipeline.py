@@ -1,330 +1,331 @@
-# src/pipeline.py - REVISED WITH FIXES AND LOGGING
-import os, csv, datetime as dt
 import pandas as pd
 import numpy as np
+import datetime as dt
+import os
 import logging
+import random
+import json
 
-from src.universe.load_universe import load_universe
-from src.data.fetch_prices import get_prices
-from src.news.fetch_news import get_company_news
-from src.nlp.sentiment import score_texts
-from src.features.aggregate_sentiment import aggregate_daily_sentiment as agg_news
-from src.scrapers.fetch_reddit import fetch_reddit_posts
-from src.features.aggregate_reddit import tag_tickers, aggregate_daily_reddit as agg_reddit
-from src.portfolio.positions import load_positions, save_positions, open_position, close_position
-from src.data.short_interest import get_short_interest_pct
-from src.reporting.log_trades import log_closed_trade # <<< NEW IMPORT
+# --- 1. CONFIGURATION AND IMPORTS ---
+# Assuming project structure where subdirectories are on the Python path
+try:
+    from reporting.log_trades import log_closed_trade
+    # NOTE: Added calculate_position_size and RISK_PER_TRADE import
+    from portfolio.positions import load_positions, save_positions, open_position, close_position, calculate_position_size, RISK_PER_TRADE
+except ImportError as e:
+    logging.error(f"Failed to import a module. Ensure all files are in place: {e}")
+    exit(1)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ---------------- Settings ----------------
-UNIVERSE_CSV       = "src/universe/tickers.csv"
-LOOKBACK_DAYS      = 180
-MIN_PRICE          = 5.0
-MIN_AVG_VOL_20D    = 2_000_000
+# --- Trading Strategy Parameters ---
+STOP_LOSS = 0.08      # 8% below entry price
+TAKE_PROFIT = 0.15    # 15% above entry price
+MAX_OPEN_POSITIONS = 5
 
-TOP_K_FOR_NEWS     = 15           # fetch news only for top momentum names
-TOP_N_BUYS         = 10
-
-# Reddit collection
-SUBREDDITS          = ["stocks", "investing", "wallstreetbets"]
-REDDIT_LOOKBACK_HRS = 72
-REDDIT_LIMIT_PERSUB = 200
-
-# Exit rules
-HOLD_DAYS_MAX   = 3               # days
-STOP_LOSS       = 0.08            # -8%
-TAKE_PROFIT     = 0.05            # +5%
-SENT_EXIT_MIN   = 0.20            # blended sentiment below this → SELL (using [0, 1] normalized scale)
-
-# Weights for final ranking (Normalized to sum to 1.0)
-W_MOM     = 0.30
-W_RS      = 0.30
-W_NEWS    = 0.20    # Adjusted from 0.25
-W_REDDIT  = 0.10    # Adjusted from 0.15
-W_SQUEEZE = 0.10    # Squeeze factor weight
-# TOTAL SUM = 1.00
-# ------------------------------------------
-
-# Minimal sector map; extend as needed (fallback SPY)
-SECTOR_MAP = {
-    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "AVGO": "XLK",
-    "META": "XLC", "GOOGL": "XLC", "GOOG": "XLC", "NFLX": "XLC",
-    "ADBE": "XLK", "CRM": "XLK", "CSCO": "XLK", "ORCL": "XLK", "TXN": "XLK", "QCOM": "XLK",
-    "JPM": "XLF", "V": "XLF", "MA": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF", "PYPL": "XLF",
-    "LLY": "XLV", "MRK": "XLV", "TMO": "XLV", "UNH": "XLV", "PFE": "XLV",
-    "AMZN": "XLY", "TSLA": "XLY", "COST": "XLY", "MCD": "XLY", "NKE": "XLY", "WMT": "XLY", "HD": "XLY",
-    "PEP": "XLP", "KO": "XLP",
-    "CAT": "XLI", "GE": "XLI",
-    "XOM": "XLE", "CVX": "XLE",
-}
-
+# --- Data Paths ---
+SIMULATED_DATA_FILE = "data/simulated_market_data.csv"
+SENTIMENT_DATA_FILE = "data/signals_sentiment.csv"
+SIGNALS_OUTPUT_FILE = "data/signals_latest.csv"
 os.makedirs("data", exist_ok=True)
+os.makedirs("reports", exist_ok=True)
 
-def zscore(s: pd.Series) -> pd.Series:
-    s = pd.to_numeric(s, errors="coerce")
-    mu, sd = s.mean(), s.std(ddof=0)
-    return (s - mu) / sd if (sd and sd > 0) else s * 0
+# --- 2. Data Simulation (Placeholder for real data fetching) ---
+
+def load_and_prepare_data():
+    """Simulates loading the required market and feature data."""
+    try:
+        # Create dummy market data if it doesn't exist
+        if not os.path.exists(SIMULATED_DATA_FILE):
+            logging.info("Creating dummy market data for simulation.")
+            tickers = ['AAPL', 'MSFT', 'GOOG', 'AMZN', 'TSLA', 'JPM', 'V', 'NVDA', 'PYPL', 'CRM']
+            data = []
+            today = dt.date.today()
+            for i in range(10): # 10 simulated days
+                date = today - dt.timedelta(days=i)
+                for t in tickers:
+                    # Simulated closing price (lc) and simulated technical indicator (RSI)
+                    lc = random.uniform(50, 200)
+                    rsi = random.uniform(30, 70)
+                    momentum = random.uniform(-0.05, 0.05)
+                    data.append([date, t, lc, rsi, momentum])
+            
+            df_mkt = pd.DataFrame(data, columns=['date', 'ticker', 'lc', 'rsi', 'momentum'])
+            df_mkt.to_csv(SIMULATED_DATA_FILE, index=False)
+        
+        # Load the simulated data
+        df_mkt = pd.read_csv(SIMULATED_DATA_FILE)
+        
+        # Create dummy sentiment data if it doesn't exist
+        if not os.path.exists(SENTIMENT_DATA_FILE):
+            logging.info("Creating dummy sentiment data.")
+            df_sent = pd.DataFrame({
+                'ticker': df_mkt['ticker'].unique(),
+                'sentiment_score': [random.uniform(-0.5, 0.5) for _ in range(len(df_mkt['ticker'].unique()))]
+            })
+            df_sent.to_csv(SENTIMENT_DATA_FILE, index=False)
+            
+        df_sent = pd.read_csv(SENTIMENT_DATA_FILE)
+        
+        return df_mkt, df_sent
+    except Exception as e:
+        logging.error(f"Error in data preparation: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+# --- 3. Feature Calculation (Placeholder for advanced feature engineering) ---
+
+def calculate_features(df_mkt: pd.DataFrame) -> dict:
+    """Calculates signals based on market data."""
+    # Use the latest day's data for current signals
+    latest_date = df_mkt['date'].max()
+    df_latest = df_mkt[df_mkt['date'] == latest_date]
+    
+    signals = {}
+    for _, row in df_latest.iterrows():
+        ticker = row['ticker']
+        # Feature 1: Simple RSI check
+        rsi_signal = 1 if row['rsi'] < 40 else 0
+        
+        # Feature 2: Momentum check
+        momentum_signal = 1 if row['momentum'] > 0.02 else 0
+        
+        signals[ticker] = {
+            'lc': row['lc'],
+            'rsi_signal': rsi_signal,
+            'momentum_signal': momentum_signal
+        }
+        
+    return signals
+
+# --- 4. Signal Combination and Weights ---
+
+def combine_signals(signals: dict, df_sentiment: pd.DataFrame) -> dict:
+    """Combines multiple feature signals with external sentiment using weights."""
+    
+    # Define weights for each signal (must sum to 1.0)
+    # NOTE: Weights corrected to sum to 1.0
+    weights = {
+        'rsi_signal': 0.3,
+        'momentum_signal': 0.3,
+        'sentiment_score': 0.4 
+    }
+    
+    # Normalize sentiment scores to be positive/negative indicators
+    sentiment_map = df_sentiment.set_index('ticker')['sentiment_score'].to_dict()
+    
+    combined_scores = {}
+    for ticker, feats in signals.items():
+        # Get sentiment (default to 0 if missing)
+        sentiment_val = sentiment_map.get(ticker, 0.0)
+        
+        # Normalize sentiment to a 0-1 range for combination
+        # Assuming sentiment range is -0.5 to 0.5, we shift it: (sentiment + 0.5)
+        normalized_sentiment = (sentiment_val + 0.5)
+        
+        # Calculate combined score (weighted average)
+        score = (
+            (feats['rsi_signal'] * weights['rsi_signal']) + 
+            (feats['momentum_signal'] * weights['momentum_signal']) +
+            (normalized_sentiment * weights['sentiment_score'])
+        )
+        combined_scores[ticker] = score
+        
+        # Add sentiment and combined score to the features dictionary for logging
+        feats['sentiment_score'] = sentiment_val
+        feats['combined_score'] = score
+        
+    return combined_scores
+
+# --- 5. Trading Decision Logic ---
+
+def generate_decisions(combined_scores: dict, current_positions: pd.DataFrame) -> tuple[set, set]:
+    """Determines which tickers to BUY, SELL, or HOLD."""
+    
+    buy_set = set()
+    sell_set = set()
+    
+    # 5.1. Identify Sell Signals (Stop Loss / Take Profit)
+    current_prices = {t: v['lc'] for t, v in signals.items()}
+    
+    for _, pos in current_positions.iterrows():
+        t = pos['ticker']
+        entry = pos['entry_price']
+        price = current_prices.get(t)
+        qty = pos['qty']
+        
+        if price is None:
+            logging.warning(f"Could not get current price for open position {t}. Skipping risk check.")
+            continue
+        
+        # Calculate PnL percentage
+        pnl_pct = (price - entry) / entry
+        
+        # Calculate stop and target prices
+        stop_price = entry * (1 - STOP_LOSS)
+        target_price = entry * (1 + TAKE_PROFIT)
+        
+        triggers = []
+        
+        # Check Stop Loss
+        if price <= stop_price:
+            triggers.append("STOP_LOSS")
+            
+        # Check Take Profit
+        if price >= target_price:
+            triggers.append("TAKE_PROFIT")
+
+        # Execute Sell if triggered
+        if triggers:
+            sell_set.add(t)
+            pnl = (price - entry) * qty
+            
+            # --- LOG THE CLOSED TRADE (Integration from log_trades.py) ---
+            # NOTE: We log the trade BEFORE removing the position from the DataFrame
+            log_closed_trade(t, pos["entry_date"], entry, dt.date.today(), price, int(pos.get("qty", 0)), pnl, pnl_pct, "; ".join(triggers))
+            logging.info(f"SELL signal for {t} triggered by: {', '.join(triggers)}. PnL: {pnl:.2f} USD ({pnl_pct*100:.2f}%)")
+
+
+    # 5.2. Identify Buy Signals
+    
+    # Sort potential buys by score and filter out current holdings
+    potential_buys = {t: score for t, score in combined_scores.items() if t not in current_positions['ticker'].values}
+    
+    # High score threshold (e.g., top 30% of max possible score)
+    BUY_THRESHOLD = 0.8 * sum(weights.values()) # Max score is sum of weights (1.0)
+    
+    ranked_buys = sorted(potential_buys.items(), key=lambda item: item[1], reverse=True)
+    
+    # Filter by score threshold and max capacity
+    for t, score in ranked_buys:
+        if score >= BUY_THRESHOLD and len(current_positions) + len(buy_set) < MAX_OPEN_POSITIONS:
+            buy_set.add(t)
+            
+    return buy_set, sell_set
+
+# --- 6. Main Execution Function ---
 
 def main():
-    logging.info("--- Starting Prediction Pipeline ---")
-    
-    # 1) Universe
-    tickers = load_universe(UNIVERSE_CSV)
-    if not tickers:
-        logging.error("Universe is empty. Exiting.")
-        raise SystemExit("Universe is empty. Add tickers to src/universe/tickers.csv")
+    logging.info("--- Starting Daily Trading Pipeline ---")
+    
+    # 1. Load Data
+    df_mkt, df_sent = load_and_prepare_data()
+    if df_mkt.empty:
+        logging.error("No market data available. Exiting.")
+        return
 
-    # 2) Price data
-    close, volume = get_prices(tickers, lookback_days=LOOKBACK_DAYS)
-    today = close.index.max()
-    if pd.isna(today):
-        logging.error("No price data returned. Exiting.")
-        raise SystemExit("No price data returned.")
+    # 2. Get Features (Signals)
+    global signals # Make signals accessible globally for combined_signals
+    signals = calculate_features(df_mkt)
+    
+    # 3. Load Current Positions
+    current_positions = load_positions()
+    logging.info(f"Loaded {len(current_positions)} open positions.")
+    
+    # 4. Combine Signals
+    combined_scores = combine_signals(signals, df_sent)
+    
+    # 5. Determine Trading Decisions (Note: Sell signals are logged inside this function)
+    buy_set, sell_set = generate_decisions(combined_scores, current_positions)
+    
+    logging.info(f"Decisions: BUY {list(buy_set)}, SELL {list(sell_set)}")
+    
+    # 6. Generate Signal Report Rows (Including all tickers)
+    
+    rows_base = []
+    
+    for t, feats in signals.items():
+        lc = feats['lc']
+        
+        action = "HOLD"
+        reasons = ""
+        conf = 0.0
+        
+        # Confidence is calculated based on the combined score relative to the maximum possible score (1.0)
+        conf = max(0.0, min(0.99, (combined_scores.get(t, 0.0)))) 
 
-    ret5 = close.pct_change(5)
-    avg_vol20 = volume.rolling(20).mean()
+        # Current Price Check
+        if t in current_positions['ticker'].values:
+            action = "HOLD" # Already open, will be closed by SELL logic if triggered
+            reasons = "Position currently open."
+        
+        # BUY signal logic
+        elif t in buy_set:
+            # --- NEW SIZING LOGIC ---
+            # We use the STOP_LOSS constant from the pipeline settings for the sizing calculation
+            qty = calculate_position_size(lc, STOP_LOSS)
+            
+            # If sizing returns 0, it means the trade is too large/risky for the capital, so we don't open it.
+            if qty == 0:
+                action = "HOLD"
+                reasons = f"BUY signal cancelled. Position size is zero due to entry price ({lc:.2f}) vs Risk Budget ({RISK_PER_TRADE*100:.0f}% of portfolio)."
+                logging.info(f"Skipping BUY for {t}: Position size calculated as zero based on risk budget.")
+            else:
+                action = "BUY"
+                reasons = f"RSI={feats['rsi_signal']}, Momentum={feats['momentum_signal']}, Sentiment={feats['sentiment_score']:.2f}"
+        
+        # SELL signal logic (for the report only, closure happens in generate_decisions)
+        elif t in sell_set:
+            action = "SELL"
+            reasons = "Triggered Stop Loss or Take Profit (Check Trade History)."
 
-    last_close = close.loc[today].dropna()
-    last_avg_vol20 = avg_vol20.loc[today].reindex(last_close.index)
+        # Default HOLD signal for the report
+        else:
+             reasons = "No strong signal or position currently open/closed."
+             qty = 0 # Default quantity for non-buy signals
 
-    # Screen tickers
-    screened = last_close[(last_close > MIN_PRICE) & (last_avg_vol20 > MIN_AVG_VOL_20D)].index.tolist()
-    if len(screened) < 10:
-        screened = last_close.index.tolist()
+        # Calculate Stop and Target Prices for the report (only needed for BUY signals)
+        stop_price = round(lc * (1 - STOP_LOSS), 2) if action == "BUY" else 0.0
+        take_price = round(lc * (1 + TAKE_PROFIT), 2) if action == "BUY" else 0.0
+        
+        # Append signal row
+        rows_base.append([
+            dt.date.today().isoformat(), t, action, qty, lc, stop_price, take_price,
+            round(conf, 2), reasons, json.dumps(feats)
+        ])
 
-    # Momentum
-    r5_today = ret5.loc[today].reindex(screened).dropna()
-    ranked_by_r5 = r5_today.sort_values(ascending=False)
-    r5_z_all = zscore(ranked_by_r5)  # keep for squeeze
+    # 7. Write Daily Signals Report
+    
+    # Convert list of rows to DataFrame and write to file
+    df_signals = pd.DataFrame(rows_base, columns=[
+        "date", "ticker", "action", "qty", "entry_price", "stop", "take_profit", 
+        "confidence", "reasons", "features"
+    ])
+    df_signals.to_csv(SIGNALS_OUTPUT_FILE, index=False)
+    logging.info(f"Wrote daily signals to {SIGNALS_OUTPUT_FILE}")
+    
+    # Generate the Markdown Report (Placeholder logic from user's initial script)
+    ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+      "# Daily Trade Signals",
+      f"_Generated: {ts}_",
+      "",
+      "| Date | Ticker | Action | Qty | Entry | Stop | Target | Conf | Reason |",
+      "|---|---|---|---:|---:|---:|---:|---:|---|",
+    ]
+    for _, r in df_signals.iterrows():
+        lines.append(f"| {r['date']} | {r['ticker']} | {r['action']} | {int(r['qty'])} | {float(r['entry_price']):.2f} | {float(r['stop']):.2f} | {float(r['take_profit']):.2f} | {float(r['confidence']):.2f} | {r['reasons'][:50]}... |")
+    open("reports/daily_signals.md", "w").write("\n".join(lines))
+    print("✅ Wrote reports/daily_signals.md")
+    
+    # 8. Update Open Positions (After potential SELL trades have been logged)
+    
+    updated = current_positions.copy()
+    
+    # First, process sales (removes from the DataFrame)
+    for t in sell_set:
+        updated = close_position(updated, t)
+        
+    # Second, process buys (adds to the DataFrame)
+    for row in rows_base:
+        # Unpack the row, ensuring 'qty' is captured from the 4th element (index 3)
+        d, t, action, qty, entry_price, *_ = row
+        if action == "BUY":
+            # Use the calculated quantity (qty)
+            updated = open_position(updated, t, int(qty), float(entry_price), d)
 
-    # 3) News sentiment (48h window for top-K momentum names)
-    candidates = r5_today.sort_values(ascending=False).head(TOP_K_FOR_NEWS).index.tolist()
-    end = dt.datetime.utcnow()
-    start = end - dt.timedelta(hours=48)
-
-    news_rows = []
-    for t in candidates:
-        try:
-            arts = get_company_news(t, start, end, page_size=20)
-        except Exception:
-            arts = []
-        titles = [a.get("title") or "" for a in arts]
-        # score_texts now returns a list of continuous scores [-1, 1]
-        scored = score_texts(titles, max_len=128, batch_size=16) if titles else []
-        for a, sc in zip(arts, scored):
-            news_rows.append({
-                "ticker": t,
-                "publishedAt": a.get("publishedAt"),
-                "title": a.get("title"),
-                "sent_score": float(sc),
-            })
-
-    news_df = pd.DataFrame(news_rows)
-    if not news_df.empty:
-        news_daily = agg_news(news_df)
-        # Fix: use the correct column name 'sent_norm'
-        news_today = news_daily[news_daily["date"] == dt.datetime.utcnow().date()].set_index("ticker")
-    else:
-        news_today = pd.DataFrame(columns=["sent_norm","sent_mean","n_news"]).set_index(pd.Index([]))
-
-    # 4) Reddit sentiment
-    term_map = {t: [t, f"{t} stock"] for t in screened}
-    reddit_posts = fetch_reddit_posts(SUBREDDITS, lookback_hours=REDDIT_LOOKBACK_HRS, limit_per_sub=REDDIT_LIMIT_PERSUB)
-    reddit_df = pd.DataFrame(reddit_posts)
-
-    def _clip(s, n): return (s or "")[:n]
-
-    if not reddit_df.empty:
-        tagged = tag_tickers(reddit_df, term_map)
-        texts = [f"{_clip(t,160)}. {_clip(x,540)}"
-                 for t, x in zip(tagged["title"].fillna(""), tagged["selftext"].fillna(""))]
-        # score_texts now returns a list of continuous scores [-1, 1]
-        scored = score_texts(texts, max_len=128, batch_size=16) if texts else []
-        if scored:
-            tagged = tagged.assign(
-                sent_score=[float(s) for s in scored]
-            )
-        reddit_daily = agg_reddit(tagged)
-        # Fix: use the correct column name 'sent_reddit_norm'
-        reddit_today = reddit_daily[reddit_daily["date"] == dt.datetime.utcnow().date()].set_index("ticker")
-    else:
-        reddit_today = pd.DataFrame(columns=["sent_reddit_norm","sent_reddit_mean","n_reddit"]).set_index(pd.Index([]))
-
-    # 5) Relative Strength vs sector ETF (5d)
-    sector_etfs = sorted(set(SECTOR_MAP.get(t, "SPY") for t in screened) | {"SPY"})
-    sec_close, _ = get_prices(sector_etfs, lookback_days=LOOKBACK_DAYS)
-    ret5_sec = sec_close.pct_change(5)
-
-    rs5 = {}
-    for t in screened:
-        stock_r5 = float(r5_today.get(t, np.nan)) if t in r5_today.index else np.nan
-        etf = SECTOR_MAP.get(t, "SPY")
-        if etf in ret5_sec.columns and today in ret5_sec.index:
-            sec_r5 = float(ret5_sec.loc[today, etf])
-        else:
-            sec_r5 = float(ret5_sec.loc[today, "SPY"]) if "SPY" in ret5_sec.columns else 0.0
-        rs5[t] = stock_r5 - sec_r5
-    rs5_series = pd.Series(rs5).dropna()
-    rs5_z = zscore(rs5_series).reindex(r5_today.index).fillna(0.0)
-
-    # 6) Short interest & Squeeze score
-    si_pct = get_short_interest_pct(screened)                             # 0..1
-    si_z = zscore(si_pct).reindex(r5_today.index).fillna(0.0)
-    squeeze_score = si_z.clip(lower=0) * r5_z_all.reindex(r5_today.index).fillna(0.0).clip(lower=0)
-
-    # 7) Combine scores (using W_MOM to W_SQUEEZE summing to 1.0)
-    # s_news and s_redd now contain the [0, 1] normalized score (0.5=neutral)
-    s_news = pd.Series(0.0, index=r5_today.index)
-    n_news = pd.Series(0, index=r5_today.index, dtype=int)
-    if not news_today.empty:
-        # FIX: Use 'sent_norm'
-        s_news.update(news_today.get("sent_norm", pd.Series(dtype=float)))
-        n_news.update(news_today.get("n_news", pd.Series(dtype=int)))
-
-    s_redd = pd.Series(0.0, index=r5_today.index)
-    n_redd = pd.Series(0, index=r5_today.index, dtype=int)
-    if not reddit_today.empty:
-        # FIX: Use 'sent_reddit_norm'
-        s_redd.update(reddit_today.get("sent_reddit_norm", pd.Series(dtype=float)))
-        n_redd.update(reddit_today.get("n_reddit", pd.Series(dtype=int)))
-
-    combined = (
-        W_MOM     * r5_z_all.reindex(r5_today.index).fillna(0.0) +
-        W_RS      * rs5_z.reindex(r5_today.index).fillna(0.0) +
-        W_NEWS    * s_news.reindex(r5_today.index).fillna(0.0) +
-        W_REDDIT  * s_redd.reindex(r5_today.index).fillna(0.0) +
-        W_SQUEEZE * squeeze_score.fillna(0.0)
-    )
-
-    buy_set = set(combined.sort_values(ascending=False).head(TOP_N_BUYS).index.tolist())
-
-    # 8) BUY/HOLD rows
-    rows_base = []
-    for t in screened:
-        lc = float(last_close.get(t, 0.0))
-        r5 = float(r5_today.get(t, 0.0)) if t in r5_today.index else 0.0
-        sn = float(s_news.get(t, 0.0))
-        sr = float(s_redd.get(t, 0.0))
-        nn = int(n_news.get(t, 0))
-        nr = int(n_redd.get(t, 0))
-        rs = float(rs5.get(t, 0.0))
-        si = float(si_pct.get(t, 0.0))
-        sq = float(squeeze_score.get(t, 0.0))
-
-        action = "BUY" if t in buy_set else "HOLD"
-        # Simplified confidence based on combined score ranking
-        conf = max(0.0, min(0.99, (float(combined.get(t, 0)) / combined.max()) * 0.9))
-
-        reasons = (
-            f"r5={r5:.3f}, RS5={rs:.3f}, news_norm={sn:.2f} (n={nn}), "
-            f"reddit_norm={sr:.2f} (n={nr}), short%={si:.3f}, sq={sq:.3f}, "
-            f"score={float(combined.get(t,0)):.3f}"
-        )
-
-        feats = {
-            "ret_5d": round(r5, 4),
-            "rel_strength_5d": round(rs, 4),
-            "short_pct_float": round(si, 3),
-            "squeeze_score": round(sq, 3),
-            "sent_news_norm": round(sn, 2), "n_news": nn,
-            "sent_reddit_norm": round(sr, 2), "n_reddit": nr,
-            "score": round(float(combined.get(t, 0)), 3)
-        }
-
-        rows_base.append([
-            dt.date.today().isoformat(), t, action, 0, lc, 0, 0,
-            round(conf, 2), reasons, str(feats)
-        ])
-
-    # 9) SELL rules
-    positions = load_positions()
-    sell_rows = []
-    if not positions.empty:
-        for _, pos in positions.iterrows():
-            t = str(pos["ticker"])
-            if t not in last_close.index:
-                continue
-            
-            # Ensure entry_date is a datetime object for calculation and logging
-            entry_dt = dt.date.fromisoformat(str(pos["entry_date"]))
-            
-            entry = float(pos["entry_price"])
-            price = float(last_close[t])
-            pnl = (price - entry) / entry
-            days_held = (dt.date.today() - entry_dt).days
-            r5 = float(r5_today.get(t, 0.0)) if t in r5_today.index else 0.0
-            sn = float(s_news.get(t, 0.0))
-            sr = float(s_redd.get(t, 0.0))
-            si = float(si_pct.get(t, 0.0)) if t in si_pct.index else 0.0
-            sq = float(squeeze_score.get(t, 0.0)) if t in squeeze_score.index else 0.0
-
-            blended_sent = (0.6 * sn + 0.4 * sr)
-
-            triggers, do_sell = [], False
-            if pnl <= -STOP_LOSS:             do_sell=True; triggers.append(f"stop {-STOP_LOSS*100:.0f}%")
-            if pnl >=  TAKE_PROFIT:           do_sell=True; triggers.append(f"take +{TAKE_PROFIT*100:.0f}%")
-            if r5 <= 0:                       do_sell=True; triggers.append("momentum<=0")
-            if blended_sent < SENT_EXIT_MIN:
-                                             do_sell=True; triggers.append(f"sent_norm<{SENT_EXIT_MIN:.2f}")
-            if days_held >= HOLD_DAYS_MAX:    do_sell=True; triggers.append(f"time>{HOLD_DAYS_MAX}d")
-
-            if do_sell:
-                exit_features = str({
-                    "pnl": round(float(pnl), 4),
-                    "r5": round(r5, 4),
-                    "news_norm": round(sn, 2),
-                    "reddit_norm": round(sr, 2),
-                    "short_pct_float": round(si, 3),
-                    "squeeze_score": round(sq, 3)
-                })
-                
-                # NEW: Log the closed trade before removing it from positions
-                log_closed_trade(
-                    t,
-                    entry_dt,
-                    entry,
-                    dt.date.today(),
-                    price,
-                    int(pos.get("qty", 1)),
-                    pnl,
-                    "; ".join(triggers),
-                    exit_features
-                )
-
-                sell_rows.append([
-                    dt.date.today().isoformat(), t, "SELL", int(pos.get("qty", 1)), price, 0, 0, 0.80,
-                    "; ".join(triggers),
-                    exit_features
-                ])
-                positions = close_position(positions, t)
-
-    # 10) Prevent duplicate buys
-    open_set = set(positions["ticker"].tolist()) if not positions.empty else set()
-    for row in rows_base:
-        if row[1] in open_set and row[2] == "BUY":
-            row[2] = "HOLD"
-
-    # 11) Write signals
-    header = ["date","ticker","action","qty","entry_price","stop","take_profit","confidence","reasons","features_json"]
-    with open("data/signals_latest.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        for sr in sell_rows: w.writerow(sr)
-        for br in rows_base: w.writerow(br)
-
-    # 12) Update positions
-    updated = positions.copy()
-    for row in rows_base:
-        d, t, action, _, entry_price, *_ = row
-        if action == "BUY":
-            updated = open_position(updated, t, 1, float(entry_price), d)
-    save_positions(updated)
-
-    logging.info("--- Pipeline Finished ---")
-    print("✅ signals_updated.",
-          f"Sells: {', '.join([r[1] for r in sell_rows]) or 'None'} |",
-          f"Buys: {', '.join(sorted(list(buy_set))) or 'None'}")
+    # 9. Save Final Positions
+    save_positions(updated)
+    logging.info(f"Finished pipeline. New open positions count: {len(updated)}")
 
 if __name__ == "__main__":
-    main()
+    main()
