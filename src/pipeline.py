@@ -67,59 +67,65 @@ def get_action(momentum, sentiment, momentum_thresh=0.5, sentiment_thresh=0.1):
         return "Hold"
 
 def main():
-    tickers = load_universe("src/data/tickers.csv")
-    prices = get_prices(tickers)
-    momentum = prices.iloc[-1] - prices.mean()
-    ranked = zscore(momentum).sort_values(ascending=False)
-
-    rss_urls = [
-        "https://finance.yahoo.com/news/rssindex",
-        "https://feeds.reuters.com/reuters/businessNews",
-        "https://www.marketwatch.com/rss/topstories",
-        "https://www.cnbc.com/id/10001147/device/rss/rss.html",
-        "https://www.bloomberg.com/feed/podcast/etf-report.xml",
-        "https://seekingalpha.com/market_currents.xml",
-        "https://www.investing.com/rss/news_25.rss",
-        "https://www.ft.com/?format=rss",
-        "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
-        "https://www.nasdaq.com/feed/rssoutbound?category=Stock-Market-News"
-    ]
-    articles = []
+    print("DEBUG: Running src/pipeline.py main()")  # Make sure you see this!
     try:
-        articles = fetch_multiple_feeds(rss_urls)
-    except Exception as e:
-        print(f"Error fetching articles: {e}")
-        articles = []
+        tickers = load_universe("src/data/tickers.csv")
+        prices = get_prices(tickers)
+        momentum = prices.iloc[-1] - prices.mean()
+        ranked = zscore(momentum).sort_values(ascending=False)
 
-    news_results = []
-    if articles:
-        for a in articles:
-            sentiment = analyze_sentiment(str(a.get("title", "")) + " " + str(a.get("summary", "")))
-            mentioned = mentions_ticker(a, tickers, TICKER_COMPANY_MAP)
-            if mentioned:
-                news_results.append({
-                    "title": a["title"],
-                    "link": a["link"],
-                    "sentiment": sentiment,
-                    "tickers": mentioned
-                })
-    else:
+        rss_urls = [
+            "https://finance.yahoo.com/news/rssindex",
+            "https://feeds.reuters.com/reuters/businessNews",
+            "https://www.marketwatch.com/rss/topstories",
+            "https://www.cnbc.com/id/10001147/device/rss/rss.html",
+            "https://www.bloomberg.com/feed/podcast/etf-report.xml",
+            "https://seekingalpha.com/market_currents.xml",
+            "https://www.investing.com/rss/news_25.rss",
+            "https://www.ft.com/?format=rss",
+            "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+            "https://www.nasdaq.com/feed/rssoutbound?category=Stock-Market-News"
+        ]
+        try:
+            articles = fetch_multiple_feeds(rss_urls)
+        except Exception as e:
+            print(f"Error fetching articles: {e}")
+            articles = []
+
         news_results = []
+        if articles:
+            for a in articles:
+                sentiment = analyze_sentiment(str(a.get("title", "")) + " " + str(a.get("summary", "")))
+                mentioned = mentions_ticker(a, tickers, TICKER_COMPANY_MAP)
+                if mentioned:
+                    news_results.append({
+                        "title": a["title"],
+                        "link": a["link"],
+                        "sentiment": sentiment,
+                        "tickers": mentioned
+                    })
+        else:
+            news_results = []
 
-    avg_sentiment = aggregate_sentiment(news_results, tickers)
-    decisions = {}
-    for ticker in tickers:
-        momentum_score = ranked.get(ticker, 0)
-        sentiment_score = avg_sentiment.get(ticker, 0)
-        action = get_action(momentum_score, sentiment_score)
-        decisions[ticker] = {
-            "momentum": momentum_score,
-            "sentiment": sentiment_score,
-            "action": action
-        }
+        avg_sentiment = aggregate_sentiment(news_results, tickers)
+        decisions = {}
+        for ticker in tickers:
+            momentum_score = ranked.get(ticker, 0)
+            sentiment_score = avg_sentiment.get(ticker, 0)
+            action = get_action(momentum_score, sentiment_score)
+            decisions[ticker] = {
+                "momentum": momentum_score,
+                "sentiment": sentiment_score,
+                "action": action
+            }
 
-    # Always return three values, never less
-    return ranked, news_results, decisions
+        print("DEBUG: Returning 3 values (ranked, news_results, decisions)")
+        return ranked, news_results, decisions
+
+    except Exception as e:
+        print(f"MAIN EXCEPTION: {e}")
+        # Always return 3 values even on error
+        return pd.Series(dtype=float), [], {}
 
 if __name__ == "__main__":
     ranked, news_results, decisions = main()
