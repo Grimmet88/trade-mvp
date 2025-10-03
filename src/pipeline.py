@@ -105,9 +105,11 @@ def main():
     ranked = zscore(momentum).sort_values(ascending=False)
 
     rss_urls = [
+        # Existing feeds
         "https://finance.yahoo.com/news/rssindex",
         "https://feeds.reuters.com/reuters/businessNews",
         "https://www.marketwatch.com/rss/topstories",
+        # Additional feeds for broader news coverage
         "https://www.cnbc.com/id/10001147/device/rss/rss.html",
         "https://www.bloomberg.com/feed/podcast/etf-report.xml",
         "https://seekingalpha.com/market_currents.xml",
@@ -157,4 +159,8 @@ def main():
     return ranked, news_results, decisions
 
 if __name__ == "__main__":
-    main()
+    ranked, news_results, decisions = main()
+    # Optional: print a summary for direct script runs
+    print("Ranked:", ranked.head())
+    print("Sample News Results:", news_results[:2])
+    print("Sample Decisions:", {k: decisions[k] for k in list(decisions.keys())[:2]})
