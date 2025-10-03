@@ -98,18 +98,16 @@ def get_action(momentum, sentiment, momentum_thresh=0.5, sentiment_thresh=0.1):
     else:
         return "Hold"
 
-def main():
+def main(return_for_streamlit=True):
     tickers = load_universe("src/data/tickers.csv")
     prices = get_prices(tickers)
     momentum = prices.iloc[-1] - prices.mean()
     ranked = zscore(momentum).sort_values(ascending=False)
 
     rss_urls = [
-        # Existing feeds
         "https://finance.yahoo.com/news/rssindex",
         "https://feeds.reuters.com/reuters/businessNews",
         "https://www.marketwatch.com/rss/topstories",
-        # Additional feeds for broader news coverage
         "https://www.cnbc.com/id/10001147/device/rss/rss.html",
         "https://www.bloomberg.com/feed/podcast/etf-report.xml",
         "https://seekingalpha.com/market_currents.xml",
@@ -156,11 +154,12 @@ def main():
     print("\nTop Candidates:")
     print(ranked.head(5))
 
+    # Always return three values for Streamlit/dashboard
     return ranked, news_results, decisions
 
 if __name__ == "__main__":
+    # Unpack all three return values for direct script usage
     ranked, news_results, decisions = main()
-    # Optional: print a summary for direct script runs
     print("Ranked:", ranked.head())
     print("Sample News Results:", news_results[:2])
     print("Sample Decisions:", {k: decisions[k] for k in list(decisions.keys())[:2]})
