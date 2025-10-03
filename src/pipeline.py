@@ -3,6 +3,7 @@ import numpy as np
 from src.news.rss import fetch_multiple_feeds
 from textblob import TextBlob
 import re
+from collections import defaultdict
 
 TICKER_COMPANY_MAP = {
     "AAPL": "Apple",
@@ -72,14 +73,30 @@ def mentions_ticker(article, tickers, ticker_company_map):
     mentions = []
     for ticker in tickers:
         company = ticker_company_map.get(ticker, "").lower()
-        # Case-insensitive ticker match (full word) or company substring match
         ticker_pattern = re.compile(rf"\b{ticker.lower()}\b")
         if ticker_pattern.search(text_lower) or company in text_lower:
             mentions.append(ticker)
-        # Also match if any word from the company name is present (partial match)
         elif company and any(word in text_lower for word in company.split()):
             mentions.append(ticker)
-    return list(set(mentions))  # Remove duplicates if any
+    return list(set(mentions))
+
+def aggregate_sentiment(news_results, tickers):
+    ticker_sentiments = defaultdict(list)
+    for nr in news_results:
+        for ticker in nr["tickers"]:
+            ticker_sentiments[ticker].append(nr["sentiment"])
+    avg_sentiment = {k: (sum(v)/len(v) if v else 0) for k, v in ticker_sentiments.items()}
+    for ticker in tickers:
+        avg_sentiment.setdefault(ticker, 0)
+    return avg_sentiment
+
+def get_action(momentum, sentiment, momentum_thresh=0.5, sentiment_thresh=0.1):
+    if momentum > momentum_thresh and sentiment > sentiment_thresh:
+        return "Buy"
+    elif momentum < -momentum_thresh and sentiment < -sentiment_thresh:
+        return "Sell"
+    else:
+        return "Hold"
 
 def main():
     tickers = load_universe("src/data/tickers.csv")
@@ -90,7 +107,7 @@ def main():
     rss_urls = [
         "https://finance.yahoo.com/news/rssindex",
         "https://feeds.reuters.com/reuters/businessNews",
-        "https://www.marketwatch.com/rss/topstories"
+        "https://www.marketwatch.com/rss/topstories",
         "https://www.cnbc.com/id/10001147/device/rss/rss.html",
         "https://www.bloomberg.com/feed/podcast/etf-report.xml",
         "https://seekingalpha.com/market_currents.xml",
@@ -114,14 +131,30 @@ def main():
                 "tickers": mentioned
             })
 
+    avg_sentiment = aggregate_sentiment(news_results, tickers)
+    decisions = {}
+    for ticker in tickers:
+        momentum_score = ranked.get(ticker, 0)
+        sentiment_score = avg_sentiment.get(ticker, 0)
+        action = get_action(momentum_score, sentiment_score)
+        decisions[ticker] = {
+            "momentum": momentum_score,
+            "sentiment": sentiment_score,
+            "action": action
+        }
+
     print(f"Found {len(news_results)} relevant articles with ticker mentions!")
     for nr in news_results[:5]:
         print(f"{nr['title']} | {nr['tickers']} | Sentiment: {nr['sentiment']:.2f} | {nr['link']}")
 
+    print("\nBuy/Sell/Hold Signals:")
+    for ticker, info in decisions.items():
+        print(f"{ticker}: {info['action']} (Momentum: {info['momentum']:.2f}, Sentiment: {info['sentiment']:.2f})")
+
     print("\nTop Candidates:")
     print(ranked.head(5))
 
-    return ranked, news_results
+    return ranked, news_results, decisions
 
 if __name__ == "__main__":
     main()
