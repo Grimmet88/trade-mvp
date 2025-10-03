@@ -9,4 +9,4 @@ praw
 yahooquery
 beautifulsoup4
 lxml
-
+textblob
