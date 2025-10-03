@@ -70,7 +70,7 @@ def mentions_ticker(article, tickers, ticker_company_map):
     mentions = []
     for ticker in tickers:
         company = ticker_company_map.get(ticker, "")
-        # Match ticker (case sensitive) or company name (case insensitive)
+        # Check for exact ticker symbol (case sensitive) or company name (case insensitive)
         if ticker in text or company.lower() in text.lower():
             mentions.append(ticker)
     return mentions
