@@ -1,11 +1,13 @@
 import os
+import csv
+import datetime as dt
 import pandas as pd
 import numpy as np
 
 # Silence HF tokenizer fork warning
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# Example: Load ticker universe
+# Example: Load ticker universe from CSV
 def load_universe(csv_path):
     return pd.read_csv(csv_path)["ticker"].tolist()
 
@@ -17,7 +19,6 @@ def get_prices(tickers, lookback_days=180):
     prices = prices.fillna(np.random.uniform(10, 200, size=prices.shape))  # Random price stub
     return prices
 
-# Momentum z-score
 def zscore(s: pd.Series) -> pd.Series:
     s = pd.to_numeric(s, errors="coerce")
     return (s - np.nanmean(s)) / np.nanstd(s)
